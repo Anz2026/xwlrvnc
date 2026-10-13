@@ -5,6 +5,8 @@
 //! XTest injects, and the compositor — running the same keymap, which we forward
 //! verbatim — turns it back into the keysym the client meant.
 
+use std::collections::HashMap;
+
 use xkbcommon_rs::xkb_state::{KeyDirection, StateComponent};
 use xkbcommon_rs::{Context, Keymap, KeymapFormat, State};
 
@@ -62,6 +64,7 @@ pub fn build(text: &str) -> Option<KeyTable> {
         syms.extend_from_slice(&key);
     }
     state.update_mask(0, 0, 0, 0, 0, 0);
+    dedup(&mut syms);
 
     // The modifier map comes from the keymap too, so xkb options that move
     // modifiers (swapping Caps and Ctrl, say) show up in X: press each key and
@@ -92,6 +95,44 @@ pub fn build(text: &str) -> Option<KeyTable> {
     Some(KeyTable { syms, modmap })
 }
 
+/// Resolves keysyms that need Shift on one key but not on another.
+///
+/// Xlib's `XKeysymToKeycode` searches the table column-first, so a keysym on
+/// the base level of some key wins over the same keysym on the shifted level
+/// of another. With the usual `us` keymap, `less` resolves to the extra ISO
+/// key (`less greater bar brokenbar`, next to left Shift) instead of
+/// Shift+comma; x11vnc's `-nomodtweak` injects that keycode with the client's
+/// Shift still held and types `greater`. Nothing is behind this keymap but
+/// clients turning keysyms into keycodes, so such a keysym is kept on the
+/// lowest keycode only, which is the main key block a matching keyboard most
+/// likely pressed. A keysym that some key gives at both Shift levels is left
+/// alone: that key works whatever Shift state the client holds, and it is what
+/// the column-first search finds (XF86AudioPause is Shift+Play on one key and
+/// plain on another, `parenleft` is Shift+9 and the keypad paren key).
+fn dedup(syms: &mut [u32]) {
+    let per = SYMS_PER as usize;
+    // keysym -> lowest key index, or None once seen at both Shift levels of a key
+    let mut owner: HashMap<u32, Option<usize>> = HashMap::new();
+    for (i, key) in syms.chunks(per).enumerate() {
+        for &sym in key {
+            if sym == 0 {
+                continue;
+            }
+            let lowest = owner.entry(sym).or_insert(Some(i));
+            if key[0] == sym && key[1] == sym {
+                *lowest = None;
+            }
+        }
+    }
+    for (i, key) in syms.chunks_mut(per).enumerate() {
+        for sym in key.iter_mut() {
+            if *sym != 0 && owner[sym].is_some_and(|lowest| lowest != i) {
+                *sym = 0;
+            }
+        }
+    }
+}
+
 /// Slices the table for a `GetKeyboardMapping(first_keycode, count)` request.
 pub fn mapping_slice(table: &[u32], first_keycode: u8, count: u8) -> Vec<u32> {
     let per = SYMS_PER as usize;
@@ -99,4 +140,86 @@ pub fn mapping_slice(table: &[u32], first_keycode: u8, count: u8) -> Vec<u32> {
     (0..count as usize * per)
         .map(|i| table.get(start + i).copied().unwrap_or(0))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A self-contained keymap (no system xkb data) with the collisions a
+    /// `us` keymap has: `less`/`greater`/`bar` on the ISO key as well as on
+    /// Shift+comma/period/backslash, and XF86AudioPause as both Shift+Play
+    /// and its own key.
+    const KEYMAP: &str = r#"xkb_keymap {
+        xkb_keycodes {
+            minimum = 8; maximum = 255;
+            <AC01> = 38; <LFSH> = 50; <BKSL> = 51; <AB08> = 59; <AB09> = 60;
+            <LSGT> = 94; <RALT> = 108; <PLAY> = 172; <PAUS> = 209;
+        };
+        xkb_types {
+            type "ONE_LEVEL" { modifiers = none; level_name[1] = "Any"; };
+            type "TWO_LEVEL" { modifiers = Shift; map[Shift] = 2;
+                level_name[1] = "Base"; level_name[2] = "Shift"; };
+            type "ALPHABETIC" { modifiers = Shift+Lock; map[Shift] = 2; map[Lock] = 2;
+                level_name[1] = "Base"; level_name[2] = "Caps"; };
+            type "FOUR_LEVEL" { modifiers = Shift+Mod5; map[Shift] = 2; map[Mod5] = 3;
+                map[Shift+Mod5] = 4; level_name[1] = "Base"; level_name[2] = "Shift";
+                level_name[3] = "Alt Base"; level_name[4] = "Shift Alt"; };
+        };
+        xkb_compatibility {
+            interpret Shift_L { action = SetMods(modifiers = Shift); };
+            interpret ISO_Level3_Shift { action = SetMods(modifiers = Mod5); };
+        };
+        xkb_symbols {
+            key <AC01> { [ s, S ] };
+            key <LFSH> { [ Shift_L ] };
+            key <BKSL> { [ backslash, bar ] };
+            key <AB08> { [ comma, less ] };
+            key <AB09> { [ period, greater ] };
+            key <LSGT> { type = "FOUR_LEVEL", [ less, greater, bar, brokenbar ] };
+            key <RALT> { [ ISO_Level3_Shift ] };
+            key <PLAY> { [ XF86AudioPlay, XF86AudioPause ] };
+            key <PAUS> { [ XF86AudioPause, XF86AudioPause ] };
+            modifier_map Shift { <LFSH> };
+            modifier_map Mod5 { <RALT> };
+        };
+    };"#;
+
+    const COMMA: u32 = 0x2c;
+    const LESS: u32 = 0x3c;
+    const PERIOD: u32 = 0x2e;
+    const GREATER: u32 = 0x3e;
+    const BACKSLASH: u32 = 0x5c;
+    const BAR: u32 = 0x7c;
+    const BROKENBAR: u32 = 0xa6;
+    const S_LOWER: u32 = 0x73;
+    const S_UPPER: u32 = 0x53;
+    const PLAY: u32 = 0x1008_ff14;
+    const PAUSE: u32 = 0x1008_ff31;
+
+    fn row(t: &KeyTable, keycode: u8) -> [u32; 4] {
+        mapping_slice(&t.syms, keycode, 1).try_into().unwrap()
+    }
+
+    #[test]
+    fn shift_ambiguous_keysyms_resolve_to_lowest_keycode() {
+        let t = build(KEYMAP).unwrap();
+        // The main block keeps its shifted symbols; the ISO key loses them.
+        assert_eq!(row(&t, 59), [COMMA, LESS, 0, 0]);
+        assert_eq!(row(&t, 60), [PERIOD, GREATER, 0, 0]);
+        assert_eq!(row(&t, 51), [BACKSLASH, BAR, 0, 0]);
+        assert_eq!(row(&t, 94), [0, 0, 0, BROKENBAR]);
+        // A keysym some key gives at both Shift levels is left alone
+        // everywhere, so clients keep whatever key they chose before.
+        assert_eq!(row(&t, 172), [PLAY, PAUSE, 0, 0]);
+        assert_eq!(row(&t, 209), [PAUSE, PAUSE, 0, 0]);
+        // Level3 columns stay blank for keys without level3 symbols.
+        assert_eq!(row(&t, 38), [S_LOWER, S_UPPER, 0, 0]);
+        // Every keysym is still reachable somewhere.
+        for sym in [COMMA, LESS, PERIOD, GREATER, BACKSLASH, BAR, BROKENBAR, PLAY, PAUSE] {
+            assert!(t.syms.contains(&sym), "{sym:#x}");
+        }
+        // Shift is still in the modifier map.
+        assert_eq!(t.modmap[0], 50);
+    }
 }
