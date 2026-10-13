@@ -32,7 +32,7 @@ As of 2026-09-09, if you are using niri, you should build it with [niri-wm/niri#
 
 ##### Other VNC servers
 
-If you are using this with x11vnc, specify the `-nomodtweak` and `-xrandr` options.
+If you are using this with x11vnc, specify the `-skip_dups`, `-xrandr`, and `-nomodtweak` options. You can specify `-modtweak` instead of `-nomodtweak` if you have issues with the shift key, but it's best not to if you don't need to since it has its own issues.
 
 Other VNC server implementations have not been tested.
 
