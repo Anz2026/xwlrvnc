@@ -245,6 +245,10 @@ fn blit_rows(
                 continue;
             }
             fb.data[d..d + n].copy_from_slice(&src[s..s + n]);
+        } else if !compute_damage && chan == [2, 1, 0] {
+            // MI9's ABGR capture needs R/B swapping. Process whole pixel blocks
+            // rather than the generic per-channel/damage branch for every pixel.
+            swap_rb_row(&src[s..s + n], &mut fb.data[d..d + n]);
         } else {
             // foreign byte order, so shuffle each pixel into XRGB, tracking
             // per-row change so damage reporting still works
@@ -280,6 +284,41 @@ fn blit_rows(
         width: (dx1 - dx0) as u16,
         height: (max_y - min_y + 1) as u16,
     })
+}
+
+fn swap_rb_row(src: &[u8], dst: &mut [u8]) {
+    assert_eq!(src.len(), dst.len());
+    assert_eq!(src.len() % 4, 0);
+    let mut offset = 0;
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::{uint8x16x4_t, vdupq_n_u8, vld4q_u8, vst4q_u8};
+        // NEON is baseline on AArch64. Each iteration reads/writes 64 bytes,
+        // within the equally-sized, non-overlapping slices checked above.
+        while offset + 64 <= src.len() {
+            let lanes = vld4q_u8(src.as_ptr().add(offset));
+            let swapped = uint8x16x4_t(lanes.2, lanes.1, lanes.0, vdupq_n_u8(255));
+            vst4q_u8(dst.as_mut_ptr().add(offset), swapped);
+            offset += 64;
+        }
+    }
+    for (s, d) in src[offset..].chunks_exact(4).zip(dst[offset..].chunks_exact_mut(4)) {
+        d.copy_from_slice(&[s[2], s[1], s[0], 255]);
+    }
+}
+
+#[cfg(test)]
+mod mi9_pixel_tests {
+    #[test]
+    fn mi9_swap_rb_matches_scalar_at_vector_boundaries() {
+        for pixels in [0, 1, 15, 16, 17, 31, 32, 33, 1080] {
+            let src: Vec<u8> = (0..pixels * 4).map(|n| (n * 17 + n / 7) as u8).collect();
+            let expected: Vec<u8> = src.chunks_exact(4).flat_map(|s| [s[2], s[1], s[0], 255]).collect();
+            let mut dst = vec![0; src.len()];
+            super::swap_rb_row(&src, &mut dst);
+            assert_eq!(dst, expected, "pixel count {pixels}");
+        }
+    }
 }
 
 /// The rotated/flipped blit: every source pixel goes through `transform` to

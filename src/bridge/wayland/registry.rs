@@ -72,7 +72,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 } else if interface == ZwlrScreencopyManagerV1::interface().name
                     && config.screen.wants_screencopy()
                 {
-                    state.screencopy = Some(bind(registry, name, version, 3, qh));
+                    // MI9/phoc 0.31 hwcomposer: match grim's working v1/SHM path.
+                    state.screencopy = Some(bind(registry, name, version, 1, qh));
                     state.maybe_start_captures(qh);
                 } else if interface == wl_seat::WlSeat::interface().name {
                     let seat =

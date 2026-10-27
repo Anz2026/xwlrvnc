@@ -77,7 +77,9 @@ impl ScreencopyCapture {
         // overlay_cursor = 1 renders the cursor into the image so the remote can
         // see it; we then report a transparent XFixes cursor so the agent doesn't
         // draw a second one on top
-        ctx.frame = Some(self.mgr.capture_output(1, &ctx.output, qh, wl_name));
+        // The legacy MI9 hwcomposer path cannot reliably copy cursor overlays.
+        // Keep capture identical to grim without -c; the viewer supplies a cursor.
+        ctx.frame = Some(self.mgr.capture_output(0, &ctx.output, qh, wl_name));
         ctx.req_at = Some(Instant::now());
     }
 
