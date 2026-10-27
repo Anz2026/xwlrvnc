@@ -302,7 +302,10 @@ fn swap_rb_row(src: &[u8], dst: &mut [u8]) {
             offset += 64;
         }
     }
-    for (s, d) in src[offset..].chunks_exact(4).zip(dst[offset..].chunks_exact_mut(4)) {
+    for (s, d) in src[offset..]
+        .chunks_exact(4)
+        .zip(dst[offset..].chunks_exact_mut(4))
+    {
         d.copy_from_slice(&[s[2], s[1], s[0], 255]);
     }
 }
@@ -313,7 +316,10 @@ mod mi9_pixel_tests {
     fn mi9_swap_rb_matches_scalar_at_vector_boundaries() {
         for pixels in [0, 1, 15, 16, 17, 31, 32, 33, 1080] {
             let src: Vec<u8> = (0..pixels * 4).map(|n| (n * 17 + n / 7) as u8).collect();
-            let expected: Vec<u8> = src.chunks_exact(4).flat_map(|s| [s[2], s[1], s[0], 255]).collect();
+            let expected: Vec<u8> = src
+                .chunks_exact(4)
+                .flat_map(|s| [s[2], s[1], s[0], 255])
+                .collect();
             let mut dst = vec![0; src.len()];
             super::swap_rb_row(&src, &mut dst);
             assert_eq!(dst, expected, "pixel count {pixels}");
